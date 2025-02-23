@@ -1,2 +1,0 @@
-# svo-bot-tg
-svobotfortg
