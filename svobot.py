@@ -11,89 +11,67 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_TOKEN = ''  #тут свой токен
+API_TOKEN = '8050483363:AAE2c2xp3Xz-W6h_GzgD08RC1EL88pCT3o0'  #тут свой токен
 ADMIN_ID = 6574083440 #тут свой айди тг для админа (узнать - @my_id_bot)
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-#таблы
-def create_tables():
-    
-    script_dir = os.path.dirname(os.path.abspath(__file__))  
-    
-    
-    db_path = os.path.join(script_dir, 'users.db')
 
-    
-    if os.path.exists(db_path):
-        print(f"База данных уже существует: {db_path}")
-    else:
-        print(f"База данных будет создана: {db_path}")
-    
-    #
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    cursor = conn.cursor()
-
-    try:
-        # users
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,  
-            full_name TEXT,
-            phone TEXT,
-            email TEXT,
-            address TEXT,
-            consent BOOLEAN
-        )
-        ''')
-
-        # requests
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            category TEXT,
-            subcategory TEXT,
-            description TEXT,
-            file_id TEXT,
-            status TEXT DEFAULT 'В ожидании',
-            specialist_id INTEGER DEFAULT NULL,
-            report_text TEXT DEFAULT NULL,
-            report_photo TEXT DEFAULT NULL,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-        ''')
-
-        
-        cursor.execute('PRAGMA table_info(requests)')
-        columns = cursor.fetchall()
-        column_names = [column[1] for column in columns]
-
-        if 'report_text' not in column_names:
-            cursor.execute('ALTER TABLE requests ADD COLUMN report_text TEXT DEFAULT NULL')
-            print("Столбец report_text добавлен в таблицу requests.")
-
-        if 'report_photo' not in column_names:
-            cursor.execute('ALTER TABLE requests ADD COLUMN report_photo TEXT DEFAULT NULL')
-            print("Столбец report_photo добавлен в таблицу requests.")
-
-        conn.commit()
-        print(f"Таблицы созданы или обновлены успешно в: {db_path}")
-
-    except sqlite3.Error as e:
-        print(f"Ошибка при создании таблиц: {e}")
-
-    finally:
-        conn.close()
-
-
-create_tables()
-
-
-conn = sqlite3.connect('users.db', check_same_thread=False)
+# Подключение к базе данных (или создание новой, если она не существует)
+conn = sqlite3.connect('users.db')
 cursor = conn.cursor()
+
+# Создание таблицы users
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    email TEXT NOT NULL,
+    address TEXT NOT NULL,
+    consent INTEGER NOT NULL
+)
+''')
+
+# Создание таблицы requests
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    subcategory TEXT NOT NULL,
+    description TEXT NOT NULL,
+    file_id TEXT,
+    status TEXT DEFAULT 'В ожидании',
+    specialist_id INTEGER,
+    report_text TEXT,
+    report_photo TEXT,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+)
+''')
+
+# Создание таблицы ratings
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    rating INTEGER NOT NULL,
+    FOREIGN KEY (request_id) REFERENCES requests (id),
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+)
+''')
+
+# Сохранение изменений и закрытие соединения
+conn.commit()
+
+
+print("Таблицы успешно созданы.")
+
+
+
 
 
 
@@ -131,17 +109,20 @@ class SpecialistStates(StatesGroup):
 # стари
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    # есть ли в бд(проверка)
-    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (message.from_user.id,))
+    user_id = message.from_user.id
+
+    # Проверяем, зарегистрирован ли пользователь
+    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
     user = cursor.fetchone()
 
-    if not user:
-        # нету в бд(начинается рега)
+    if user:
+        # Если пользователь уже зарегистрирован, показываем главное меню
+        await show_main_menu(message)
+    else:
+        # Если пользователь не зарегистрирован, начинаем процесс регистрации
         await message.answer("Добро пожаловать! Давайте начнем регистрацию.\nВведите ваше ФИО:")
         await RegistrationStates.waiting_for_full_name.set()
-    else:
-        # если зареган=главное меню
-        await show_main_menu(message)
+    
 
 # фио
 @dp.message_handler(state=RegistrationStates.waiting_for_full_name)
@@ -185,28 +166,25 @@ async def process_address(message: types.Message, state: FSMContext):
 @dp.message_handler(state=RegistrationStates.waiting_for_consent)
 async def process_consent(message: types.Message, state: FSMContext):
     consent = message.text.lower() in ["согласен", "согласна"]
-    
-    
-    user_data = await state.get_data()
-    user_id = message.from_user.id 
-    
+    user_data = await state.get_data()  # Получаем данные из состояния
+    user_id = message.from_user.id  # Получаем user_id из сообщения
+
     try:
-        # save v bd
+        # Сохраняем данные в базу данных
         cursor.execute('''
         INSERT INTO users (user_id, full_name, phone, email, address, consent)
         VALUES (?, ?, ?, ?, ?, ?)
         ''', (user_id, user_data['full_name'], user_data['phone'], user_data['email'], user_data['address'], consent))
         conn.commit()
         
-        # uved
+        # Уведомляем пользователя
         await message.answer("Регистрация завершена! Теперь вы можете создавать заявки.", reply_markup=types.ReplyKeyboardRemove())
         
-        # main 
+        # Показываем главное меню
         await show_main_menu(message)
     except sqlite3.Error as e:
         await message.answer(f"Ошибка при сохранении данных: {e}")
 
-    
     await state.finish()
 
 # main menu
